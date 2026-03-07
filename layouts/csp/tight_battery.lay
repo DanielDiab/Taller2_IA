@@ -1,0 +1,11 @@
+%%%%%%%%%%
+%B.~~..E.%
+%........%
+%........%
+%.E..~~.B%
+%%%%%%%%%%
+---
+drone:1:capacity=5,battery=16
+drone:2:capacity=5,battery=16
+delivery:1:weight=3,window=2-10
+delivery:2:weight=3,window=2-10
