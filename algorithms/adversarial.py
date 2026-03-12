@@ -163,80 +163,176 @@ class ExpectimaxAgent(MultiAgentSearchAgent):
         - Do NOT prune in expectimax (unlike alpha-beta).
         - self.prob is set via the constructor argument prob.
         """
-        num_agents = state.get_num_agents()
-        p = self.prob
+        numero_agentes = state.get_num_agents() #total de agentes en el juego (1 dron + n cazadores)
+        probabilidad_random = self.prob #probabilidad de que cada cazador actúe aleatoriamente (0=greedy, 1=random)
 
-        def value(s: GameState, depth_left: int, agent_index: int) -> float:
-            # Terminal / cutoff
-            if s.is_win() or s.is_lose() or depth_left == 0:
+        def v(s: GameState, profundidad: int, iagente: int) -> float:
+            if s.is_win() or s.is_lose() or profundidad == 0: #casos base terminal o corte por profundidad
                 return float(self.evaluation_function(s))
 
-            legal = s.get_legal_actions(agent_index)
-            if not legal:
-                return float(self.evaluation_function(s))
+            acciones_l = s.get_legal_actions(iagente) #acciones legales para el agente actual (dron o cazador)
+            if not acciones_l:
+                return float(self.evaluation_function(s)) #si no hay acciones legales, evaluar el estado actual
 
-            next_agent = (agent_index + 1) % num_agents
-            next_depth = depth_left - 1 if next_agent == 0 else depth_left
+            siguiente_agente = (iagente + 1) % numero_agentes
+            profundidad_siguiente = profundidad - 1 if siguiente_agente == 0 else profundidad #disminuir profundidad solo después de que todos los agentes hayan movido (ciclo completo)
 
-            # MAX (drone)
-            if agent_index == 0:
-                best = float("-inf")
-                for a in legal:
-                    succ = s.generate_successor(agent_index, a)
-                    best = max(best, value(succ, next_depth, next_agent))
-                return best
+            # accion que maximiza el valor esperado para el dron (MAX)
+            if iagente == 0:
+                m_valor = float("-inf")
+                for a in acciones_l: #iterar sobre las acciones legales del dron
+                    succ = s.generate_successor(iagente, a)
+                    m_valor = max(m_valor, v(succ, profundidad_siguiente, siguiente_agente)) # actualizar el valor máximo encontrado para el dron
+                return m_valor
 
-            # CHANCE (hunter): MixedHunterAgent model from world/rules.py
+            # cazadores se modela greedy como se especifica en las reglas (rules.py)
             layout = s.get_layout()
             drone_pos = s.get_drone_position()
-            hunter_pos = s.get_hunter_position(agent_index)
+            cazador_pos = s.get_hunter_position(iagente) #mapa, posicion dron y posicion del cazador actual
 
-            # If positions missing, fallback to uniform expected value
-            if drone_pos is None or hunter_pos is None:
+            # si falta informacion (cazador o dron no visible), usar solo la parte aleatoria (media de los hijos)
+            if drone_pos is None or cazador_pos is None:
                 total = 0.0
-                for a in legal:
-                    succ = s.generate_successor(agent_index, a)
-                    total += value(succ, next_depth, next_agent)
-                return total / len(legal)
+                for a in acciones_l:
+                    succ = s.generate_successor(iagente, a)
+                    total += v(succ, profundidad_siguiente, siguiente_agente)
+                return total / len(acciones_l)
 
-            # 1) Greedy action = minimize BFS distance to drone (same as HunterAgent)
-            best_action = Directions.STOP
-            best_dist = float("inf")
+            # Greedy, esta es la parte de greedy en donde se calcula la accion que minimiza la distancia al dron (minimizar BFS)
+            m_accion = Directions.STOP
+            m_distancia = float("inf")
 
-            for a in legal:
-                successor_pos = Actions.get_successor(hunter_pos, a)
-                sx, sy = int(successor_pos[0]), int(successor_pos[1])
-                dist = bfs_distance(layout, (sx, sy), drone_pos, hunter_restricted=True)
-                if dist < best_dist:
-                    best_dist = dist
-                    best_action = a
+            for a in acciones_l: #poscicion siguiente del cazador para cada accion legal
+                pos_siguiente = Actions.get_successor(cazador_pos, a)
+                sx, sy = int(pos_siguiente[0]), int(pos_siguiente[1])
+                distancia = bfs_distance(layout, (sx, sy), drone_pos, hunter_restricted=True) #calcular la distancia BFS desde la posicion siguiente del cazador hasta el dron (con restricciones para cazadores)
+                if distancia < m_distancia: #elegir la accion que minimiza la distancia al dron
+                    m_distancia = distancia
+                    m_accion = a
 
-            succ_greedy = s.generate_successor(agent_index, best_action)
-            v_greedy = value(succ_greedy, next_depth, next_agent)
+            estado_greedy = s.generate_successor(iagente, m_accion)
+            v_greedy = v(estado_greedy, profundidad_siguiente, siguiente_agente) #valor del estado resultante de la accion greedy para el cazador
 
-            # 2) Random part = average over all legal actions
+            # Parte aleatoria: promedio de los valores de los estados resultantes de cada accion legal
             total = 0.0
-            for a in legal:
-                succ = s.generate_successor(agent_index, a)
-                total += value(succ, next_depth, next_agent)
-            v_random = total / len(legal)
+            for a in acciones_l:
+                succ = s.generate_successor(iagente, a)
+                total += v(succ, profundidad_siguiente, siguiente_agente)
+            v_random = total / len(acciones_l)
 
-            return (1 - p) * v_greedy + p * v_random
+            return (1 - probabilidad_random) * v_greedy + probabilidad_random * v_random #valor esperado para el cazador con el modelo mixto: combinación ponderada del valor greedy y el valor aleatorio
 
-        # Root: choose action that maximizes expected value
-        legal_actions = state.get_legal_actions(0)
-        if not legal_actions:
+        # Raíz: elegir la acción que maximiza el valor esperado para el dron
+        acciones_dron = state.get_legal_actions(0)
+        if not acciones_dron:
             return None
 
-        best_action = legal_actions[0]
-        best_value = float("-inf")
+        m_accion_dron = acciones_dron[0]
+        m_valor_dron = float("-inf")
 
-        first_hunter = 1 if num_agents > 1 else 0
-        for a in legal_actions:
+        cazador_i = 1 if numero_agentes > 1 else 0 #primer cazador (si existe) para la siguiente llamada recursiva después de la acción del dron
+        for a in acciones_dron:
             succ = state.generate_successor(0, a)
-            v = value(succ, self.depth, first_hunter)
-            if v > best_value:
-                best_value = v
-                best_action = a
+            valor_succ = v(succ, self.depth, cazador_i)  
+            if valor_succ > m_valor_dron:
+                m_valor_dron = valor_succ #estados del dron y cazador resultantes de la acción del dron
+                m_accion_dron = a
 
-        return best_action
+        return m_accion_dron #acción que maximiza el valor esperado para el dron en la raíz del árbol de búsqueda
+    
+
+## PRIMERA SOLUCION AUTONOMA
+"""
+    numero_agentes = state.get_num_agents()
+    probabilidad_random = self.prob
+
+    def valor(s: GameState, profundidad: int, iagente: int) -> float:
+        if s.is_win() or s.is_lose() or profundidad == 0:
+            return float(self.evaluation_function(s))
+
+        acciones_l = s.get_legal_actions(iagente)
+        if not acciones_l:
+            return float(self.evaluation_function(s))
+
+        siguiente_agente = (iagente + 1) % numero_agentes
+        profundidad_siguiente = profundidad - 1 if siguiente_agente == 0 else profundidad
+
+        # MAX (dron)
+        if iagente == 0:
+            mejor_valor = float("-inf")
+            for accion in acciones_l:
+                succ = s.generate_successor(iagente, accion)
+                mejor_valor = max(mejor_valor, valor(succ, profundidad_siguiente, siguiente_agente))
+            return mejor_valor
+
+        # Usa (1-p)*min(valores_hijos) en vez de (1-p)*V(succ_greedyBFS)
+        valores_hijos = []
+        for accion in acciones_l:
+            succ = s.generate_successor(iagente, accion)
+            valores_hijos.append(valor(succ, profundidad_siguiente, siguiente_agente))
+
+        valor_greedy_mal = min(valores_hijos)                      
+        valor_random = sum(valores_hijos) / len(valores_hijos)     
+
+        return (1 - probabilidad_random) * valor_greedy_mal + probabilidad_random * valor_random
+
+    acciones_dron = state.get_legal_actions(0)
+    if not acciones_dron:
+        return None
+
+    mejor_accion = acciones_dron[0]
+    mejor_valor = float("-inf")
+    primer_cazador = 1 if numero_agentes > 1 else 0
+
+    for accion in acciones_dron:
+        succ = state.generate_successor(0, accion)
+        valor_succ = valor(succ, self.depth, primer_cazador)
+        if valor_succ > mejor_valor:
+            mejor_valor = valor_succ
+            mejor_accion = accion
+
+    return mejor_accion 
+
+
+Prompt 1
+“Implementa Expectimax para el dron (MAX) y cazadores como CHANCE con probabilidad p de acción aleatoria. Debe correr con -p y -d.”
+
+Lo que se tomó/corrigió del intento:
+	•	Se construyó la recursión value(s, depth, agent_index) con:
+	•	caso MAX: max(...)
+	•	caso CHANCE: combinación (1-p)*... + p*mean(...)
+	•	Se agregó lógica de next_agent y reducción de depth solo cuando vuelve al dron.
+
+⸻
+
+Prompt 2
+“El enunciado dice que el cazador greedy no es minimax: en world/rules.py persigue usando BFS distance. Ajusta Expectimax para que su parte greedy replique exactamente ese comportamiento.”
+
+Lo que se tomó/corrigió del intento:
+	•	Se reemplazó min(child_vals) por una sola transición greedy:
+	•	calcular best_action minimizando bfs_distance(layout, successor_pos, drone_pos, hunter_restricted=True)
+	•	usar v_greedy = value(generate_successor(hunter, best_action), ...)
+	•	Se mantuvo el promedio uniforme para la parte random.
+
+⸻
+
+Prompt 3
+“Me falla el código por nombres/funciones del framework. Hazlo compatible con el proyecto: usa get_layout(), get_drone_position(), get_hunter_position(), Actions.get_successor(), get_legal_actions() y generate_successor().”
+
+Lo que se tomó/corrigió del intento:
+	•	Se alinearon las llamadas a métodos del GameState del proyecto:
+	•	s.get_layout(), s.get_drone_position(), s.get_hunter_position(agent_index)
+	•	Actions.get_successor(hunter_pos, action)
+	•	s.generate_successor(agent_index, action)
+	•	Se agregó fallback si faltan posiciones: promedio uniforme.
+
+⸻
+
+Prompt 4
+“Haz que el agente retorne la acción óptima desde la raíz (no el valor), y que no se caiga si no hay acciones legales.”
+
+Lo que se tomó/corrigió del intento:
+	•	Se implementó selección en la raíz:
+	•	iterar acciones del dron, escoger la que maximiza value(...)
+	•	if not legal_actions: return None
+    """
